@@ -1,7 +1,7 @@
 pipeline {
   agent none
   environment {
-    DOCKERHUB_REPO = "dhruvpateld/aws-eb-sample"
+    DOCKERHUB_REPO = 'dhruvpatelll/aws-eb-sample'
     IMAGE = "${env.DOCKERHUB_REPO}:${env.BUILD_NUMBER}"
   }
   stages {
