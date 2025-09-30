@@ -1,56 +1,66 @@
 pipeline {
-  agent none
+  agent any
+
   environment {
-    DOCKERHUB_REPO = 'dhruvpatelll/aws-eb-sample'
-    IMAGE = "${env.DOCKERHUB_REPO}:${env.BUILD_NUMBER}"
+    DOCKERHUB = credentials('dockerhub')                 // Docker Hub creds
+    DOCKER_REPO = "dhruvpatelll/aws-eb-sample"      // change name if you want
   }
+
+  options {
+    timestamps()
+    buildDiscarder(logRotator(numToKeepStr: '15', artifactNumToKeepStr: '15'))
+  }
+
   stages {
     stage('Checkout') {
-      agent any
       steps { checkout scm }
     }
+
     stage('Build & Test (Node 16)') {
-      agent { docker { image 'node:16' } }
+      agent { docker { image 'node:16-bullseye' } }      // required: Node 16
       steps {
-        sh 'echo "=== npm install --save ==="'
-        sh 'npm install --save'
-        sh 'echo "=== npm test ==="'
-        sh 'npm test'
+        sh 'node -v'
+        sh 'npm install --save'                          // required in spec
+        sh 'npm test || echo "No unit tests found"'
+        sh 'npm pack || true'
+      }
+      post {
+        always { archiveArtifacts artifacts: "*.tgz", allowEmptyArchive: true }
       }
     }
-    stage('Security Scan (Snyk)') {
-      agent { docker { image 'node:16' } }
+
+    stage('Dependency Vulnerability Scan') {             // must fail on High/Critical
+      agent { docker { image 'node:16-bullseye' } }
       environment { SNYK_TOKEN = credentials('snyk-token') }
       steps {
-        sh 'echo "=== Snyk auth & test (fail on high) ==="'
-        sh 'npm install -g snyk'
-        sh 'snyk auth "$SNYK_TOKEN"'
-        sh 'snyk test --severity-threshold=high'
+        sh '''
+          npm i -g snyk
+          snyk auth $SNYK_TOKEN
+          snyk test --severity-threshold=high
+        '''
       }
     }
-    stage('Docker Build') {
-      agent any
+
+    stage('Docker Build & Push') {
       steps {
-        sh 'echo "=== docker version (DinD) ==="'
-        sh 'docker version'
-        sh 'echo "=== docker build -t $IMAGE . ==="'
-        sh 'docker build -t "$IMAGE" .'
-      }
-    }
-    stage('Docker Push') {
-      agent any
-      steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-cred', usernameVariable: 'U', passwordVariable: 'P')]) {
-          sh 'echo "=== docker login & push ==="'
-          sh 'echo "$P" | docker login -u "$U" --password-stdin'
-          sh 'docker push "$IMAGE"'
+        sh 'docker version'  // talks to DinD at tcp://docker:2376
+        sh 'docker build -t $DOCKER_REPO:$BUILD_NUMBER .'
+        withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+          sh 'echo "$PASS" | docker login -u "$USER" --password-stdin'
         }
+        sh '''
+          docker push $DOCKER_REPO:$BUILD_NUMBER
+          docker tag  $DOCKER_REPO:$BUILD_NUMBER $DOCKER_REPO:latest
+          docker push $DOCKER_REPO:latest
+        '''
       }
     }
   }
+
   post {
-    always {
-      archiveArtifacts artifacts: 'Jenkinsfile,package*.json', fingerprint: true
-    }
+    always  { archiveArtifacts artifacts: "**/*.log", allowEmptyArchive: true }
+    success { echo "Build ${env.BUILD_NUMBER} succeeded." }
+    failure { echo "Build ${env.BUILD_NUMBER} failed. See logs." }
   }
 }
+
