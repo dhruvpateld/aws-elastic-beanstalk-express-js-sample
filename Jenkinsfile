@@ -2,13 +2,13 @@ pipeline {
   agent any
   options {
     timestamps()
-    skipDefaultCheckout(true)                         // we checkout explicitly in the first stage
+    skipDefaultCheckout(true) // we'll checkout explicitly
     buildDiscarder(logRotator(numToKeepStr: '15', artifactNumToKeepStr: '15'))
   }
+
   environment {
-    DOCKERHUB   = credentials('dockerhub')            // username+password (ID: dockerhub)
-    DOCKER_REPO = "${DOCKERHUB_USR}/eb-node-sample"   // change name if you want
-    SNYK_TOKEN  = credentials('snyk-token')           // secret text (ID: snyk-token)
+    // We'll compute DOCKER_REPO in 'Init' using the dockerhub credential username.
+    DOCKER_REPO = ''
   }
 
   stages {
@@ -16,6 +16,18 @@ pipeline {
       steps {
         checkout scm
         sh 'ls -la'
+      }
+    }
+
+    stage('Init (derive Docker repo name)') {
+      steps {
+        script {
+          withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+            env.DOCKER_USER = DH_USER
+            env.DOCKER_REPO = "${DH_USER}/eb-node-sample"
+          }
+          echo "Using Docker repository: ${env.DOCKER_REPO}"
+        }
       }
     }
 
@@ -41,42 +53,43 @@ pipeline {
 
     stage('Dependency Vulnerability Scan (Snyk)') {
       steps {
-        sh '''
-          docker run --rm \
-            -e SNYK_TOKEN="$SNYK_TOKEN" \
-            -v "$PWD":/workspace -w /workspace \
-            node:16-bullseye bash -lc "
-              npm i -g snyk &&
-              snyk auth $SNYK_TOKEN &&
-              snyk test --severity-threshold=high
-            "
-        '''
+        withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
+          sh '''
+            docker run --rm \
+              -e SNYK_TOKEN="$SNYK_TOKEN" \
+              -v "$PWD":/workspace -w /workspace \
+              node:16-bullseye bash -lc "
+                npm i -g snyk &&
+                snyk auth $SNYK_TOKEN &&
+                snyk test --severity-threshold=high
+              "
+          '''
+        }
       }
       post {
         unsuccessful {
-          echo 'Snyk reported High/Critical severity. Build failed as required.'
+          echo 'Snyk reported High/Critical severity. Failing as required.'
         }
       }
     }
 
     stage('Docker Build & Push') {
       steps {
-        sh 'docker version'  // verifies Jenkins -> DinD connection
-        sh 'docker build -t $DOCKER_REPO:$BUILD_NUMBER .'
+        sh 'docker version' // verifies Jenkins -> DinD connectivity
+        sh 'docker build -t "$DOCKER_REPO:$BUILD_NUMBER" .'
         withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
           sh 'echo "$PASS" | docker login -u "$USER" --password-stdin'
         }
         sh '''
-          docker push $DOCKER_REPO:$BUILD_NUMBER
-          docker tag  $DOCKER_REPO:$BUILD_NUMBER $DOCKER_REPO:latest
-          docker push $DOCKER_REPO:latest
+          docker push "$DOCKER_REPO:$BUILD_NUMBER"
+          docker tag  "$DOCKER_REPO:$BUILD_NUMBER" "$DOCKER_REPO:latest"
+          docker push "$DOCKER_REPO:latest"
         '''
       }
     }
 
     stage('Archive Logs & Evidence') {
       steps {
-        // collect common evidence patterns if present
         sh 'mkdir -p reports || true'
         sh 'ls -la > build_listing.log || true'
       }
@@ -87,8 +100,5 @@ pipeline {
       }
     }
   }
-
-  // NOTE: No pipeline-level post{} that archives files.
-  // Archiving only happens inside stages to guarantee workspace context.
 }
 
