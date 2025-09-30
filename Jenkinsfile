@@ -7,7 +7,7 @@ pipeline {
   }
 
   environment {
-    DOCKER_REPO = ''   // we’ll set this in Init
+    DOCKER_REPO = ''   // set in Init
   }
 
   stages {
@@ -21,21 +21,28 @@ pipeline {
     stage('Init (Docker repo + quick checks)') {
       steps {
         script {
-          // Try to derive repo from dockerhub credential; fallback if empty/missing
-          def derived = ''
-          withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
-            derived = DH_USER?.trim()
+          // Try read dockerhub username from credential; fallback to your known username
+          def userFromCred = ''
+          try {
+            withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+              userFromCred = DH_USER?.trim()
+            }
+          } catch (ignored) {
+            // credential missing—will rely on fallback below
           }
-          if (!derived) {
-            echo 'WARNING: dockerhub credential username is empty; using fallback repo name.'
-            env.DOCKER_REPO = 'dhruvpatelll/eb-node-sample'  // <-- change if you want
-          } else {
-            env.DOCKER_REPO = "${derived}/eb-node-sample"
-          }
+
+          def fallbackUser = 'dhruvpatelll'   // <-- set this to YOUR Docker Hub username
+          def finalUser = userFromCred ?: fallbackUser
+          env.DOCKER_REPO = "${finalUser}/eb-node-sample"
+
           echo "Using Docker repository: ${env.DOCKER_REPO}"
+
+          if (!env.DOCKER_REPO || env.DOCKER_REPO == '/eb-node-sample') {
+            error 'DOCKER_REPO is empty. Fix dockerhub credential or set fallbackUser.'
+          }
         }
 
-        // Sanity: show files inside the container at /workspace
+        // prove the mount works
         sh '''
           docker run --rm -v "${WORKSPACE}:/workspace" -w /workspace \
             node:16-bullseye bash -lc 'echo "IN-CONTAINER LISTING:"; ls -la'
@@ -58,9 +65,7 @@ pipeline {
         '''
       }
       post {
-        always {
-          archiveArtifacts artifacts: '*.tgz', allowEmptyArchive: true
-        }
+        always { archiveArtifacts artifacts: '*.tgz', allowEmptyArchive: true }
       }
     }
 
@@ -89,6 +94,7 @@ pipeline {
     stage('Docker Build & Push') {
       steps {
         sh 'docker version'
+        sh 'echo "Building image: $DOCKER_REPO:$BUILD_NUMBER"'
         sh 'docker build -t "$DOCKER_REPO:$BUILD_NUMBER" .'
         withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
           sh 'echo "$PASS" | docker login -u "$USER" --password-stdin'
