@@ -7,7 +7,7 @@ pipeline {
   }
 
   environment {
-    DOCKER_REPO = ''   // set in Init
+    DOCKER_REPO = 'dhruvpatelll/eb-node-sample'   // <— your repo, hard-set
   }
 
   stages {
@@ -18,43 +18,20 @@ pipeline {
       }
     }
 
-    stage('Init (Docker repo + quick checks)') {
+    stage('Init (quick mount check)') {
       steps {
-        script {
-          // Try read dockerhub username from credential; fallback to your known username
-          def userFromCred = ''
-          try {
-            withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
-              userFromCred = DH_USER?.trim()
-            }
-          } catch (ignored) {
-            // credential missing—will rely on fallback below
-          }
-
-          def fallbackUser = 'dhruvpatelll'   // <-- set this to YOUR Docker Hub username
-          def finalUser = userFromCred ?: fallbackUser
-          env.DOCKER_REPO = "${finalUser}/eb-node-sample"
-
-          echo "Using Docker repository: ${env.DOCKER_REPO}"
-
-          if (!env.DOCKER_REPO || env.DOCKER_REPO == '/eb-node-sample') {
-            error 'DOCKER_REPO is empty. Fix dockerhub credential or set fallbackUser.'
-          }
-        }
-
-        // prove the mount works
         sh '''
           docker run --rm -v "${WORKSPACE}:/workspace" -w /workspace \
             node:16-bullseye bash -lc 'echo "IN-CONTAINER LISTING:"; ls -la'
         '''
+        echo "Using Docker repository: ${env.DOCKER_REPO}"
       }
     }
 
     stage('Build & Test (Node 16)') {
       steps {
         sh '''
-          docker run --rm \
-            -v "${WORKSPACE}:/workspace" -w /workspace \
+          docker run --rm -v "${WORKSPACE}:/workspace" -w /workspace \
             node:16-bullseye bash -lc "
               test -f package.json && echo OK: package.json present || (echo 'package.json missing INSIDE container' && ls -la && exit 2);
               node -v &&
@@ -85,9 +62,7 @@ pipeline {
         }
       }
       post {
-        unsuccessful {
-          echo 'Snyk reported High/Critical severity. Failing as required.'
-        }
+        unsuccessful { echo 'Snyk reported High/Critical severity. Failing as required.' }
       }
     }
 
@@ -113,9 +88,7 @@ pipeline {
         sh 'ls -la > build_listing.log || true'
       }
       post {
-        always {
-          archiveArtifacts artifacts: 'reports/**/*, **/*.log', allowEmptyArchive: true
-        }
+        always { archiveArtifacts artifacts: 'reports/**/*, **/*.log', allowEmptyArchive: true }
       }
     }
   }
