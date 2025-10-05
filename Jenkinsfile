@@ -9,7 +9,7 @@ pipeline {
 
   /* EDIT: set your Docker Hub repo here */
   environment {
-    DOCKER_REPO = 'dhruvpatelll/eb-node-sampl'          // <-- change to YOUR repo
+    DOCKER_REPO = 'dhruvpatelll'        
     IMAGE_TAG   = "${env.BUILD_NUMBER}"
     IMAGE_FULL  = "${env.DOCKER_REPO}:${env.IMAGE_TAG}"
   }
