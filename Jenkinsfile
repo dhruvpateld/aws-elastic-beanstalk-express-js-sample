@@ -8,7 +8,7 @@ pipeline {
   }
 
   environment {
-    DOCKER_REPO = 'dhruvpatelll/eb-node-sample'   // <-- your Docker Hub repo
+    DOCKER_REPO = 'dhruvpatelll/eb-node-sample'  
   }
 
   stages {
@@ -53,6 +53,24 @@ pipeline {
         }
       }
     }
+    
+    stage('Dependency Scan') {
+	steps {
+	    withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
+	      sh '''
+		docker run --rm \
+		  -e SNYK_TOKEN="$SNYK_TOKEN" \
+		  -v "$WORKSPACE:/workspace" -w /workspace \
+		  node:16-bullseye bash -lc "
+		    npm i -g snyk &&
+		    snyk auth $SNYK_TOKEN &&
+		    snyk test --file=package.json --severity-threshold=high
+		  "
+	      '''
+	    }
+	  }
+	}
+
 
     stage('Build Docker Image') {
       steps {
