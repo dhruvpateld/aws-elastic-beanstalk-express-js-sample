@@ -2,58 +2,43 @@ pipeline {
   agent any
   options {
     timestamps()
-    skipDefaultCheckout(true)
+    // NOTE: do NOT use skipDefaultCheckout(true)
+    // Leaving it out shows the extra "Checkout SCM" stage like your friend's screenshot.
     buildDiscarder(logRotator(numToKeepStr: '15', artifactNumToKeepStr: '15'))
   }
 
   environment {
-    DOCKER_REPO = 'dhruvpatelll/eb-node-sample'   // <— your repo, hard-set
+    DOCKER_REPO = 'dhruvpatelll/eb-node-sample'   // <-- your Docker Hub repo
   }
 
   stages {
     stage('Checkout') {
       steps {
+        // explicit checkout so you get both "Checkout SCM" and "Checkout"
         checkout scm
-        sh 'echo "HOST WORKSPACE is: $WORKSPACE" && ls -la'
+        sh 'ls -la'
       }
     }
 
-    stage('Init (quick mount check)') {
+    stage('Install Node 16 (once per build)') {
       steps {
-        sh '''
-          docker run --rm -v "${WORKSPACE}:/workspace" -w /workspace \
-            node:16-bullseye bash -lc 'echo "IN-CONTAINER LISTING:"; ls -la'
-        '''
-        echo "Using Docker repository: ${env.DOCKER_REPO}"
+        // Pre-pull the image so later stages start fast
+        sh 'docker pull node:16-bullseye || true'
       }
     }
 
-    stage('Build & Test (Node 16)') {
+    stage('Install & Test') {
       steps {
-        sh '''
-          docker run --rm -v "${WORKSPACE}:/workspace" -w /workspace \
-            node:16-bullseye bash -lc "
-              test -f package.json && echo OK: package.json present || (echo 'package.json missing INSIDE container' && ls -la && exit 2);
-              node -v &&
-              npm install --save &&
-              npm test || echo 'No unit tests found' &&
-              npm pack || true
-            "
-        '''
-      }
-      post {
-        always { archiveArtifacts artifacts: '*.tgz', allowEmptyArchive: true }
-      }
-    }
-
-    stage('Dependency Vulnerability Scan (Snyk)') {
-      steps {
+        // npm install + tests + Snyk scan (folded into this stage to match your friend's layout)
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
           sh '''
             docker run --rm \
               -e SNYK_TOKEN="$SNYK_TOKEN" \
-              -v "${WORKSPACE}:/workspace" -w /workspace \
+              -v "$WORKSPACE:/workspace" -w /workspace \
               node:16-bullseye bash -lc "
+                node -v &&
+                npm install --save &&
+                npm test || echo 'No unit tests found' &&
                 npm i -g snyk &&
                 snyk auth $SNYK_TOKEN &&
                 snyk test --file=package.json --severity-threshold=high
@@ -62,15 +47,22 @@ pipeline {
         }
       }
       post {
-        unsuccessful { echo 'Snyk reported High/Critical severity. Failing as required.' }
+        always {
+          // archive any package tarball if created
+          archiveArtifacts artifacts: '*.tgz', allowEmptyArchive: true
+        }
       }
     }
 
-    stage('Docker Build & Push') {
+    stage('Build Docker Image') {
       steps {
-        sh 'docker version'
         sh 'echo "Building image: $DOCKER_REPO:$BUILD_NUMBER"'
         sh 'docker build -t "$DOCKER_REPO:$BUILD_NUMBER" .'
+      }
+    }
+
+    stage('Login & Push') {
+      steps {
         withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
           sh 'echo "$PASS" | docker login -u "$USER" --password-stdin'
         }
@@ -82,15 +74,22 @@ pipeline {
       }
     }
 
-    stage('Archive Logs & Evidence') {
+    stage('Post Actions') {
       steps {
         sh 'mkdir -p reports || true'
         sh 'ls -la > build_listing.log || true'
       }
       post {
-        always { archiveArtifacts artifacts: 'reports/**/*, **/*.log', allowEmptyArchive: true }
+        always {
+          archiveArtifacts artifacts: 'reports/**/*, **/*.log', allowEmptyArchive: true
+        }
       }
     }
+  }
+
+  post {
+    success { echo 'Pipeline completed successfully.' }
+    failure { echo 'Pipeline failed — check Install & Test for Snyk or Docker stages.' }
   }
 }
 
